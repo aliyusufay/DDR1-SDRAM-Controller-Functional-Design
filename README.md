@@ -10,7 +10,7 @@ A fully synthesizable, JEDEC JESD79F-compliant functional RTL controller for DDR
   - ACT, READ, WRITE, PRECHARGE, REFRESH, MRS, NOP
 - **Auto-precharge**: Triggered on A10=1 with burst-end logic
 - **Timing constraints enforced**:  
-  `tRCD`, `tRP`, `tRAS`, `tRFC`, `tCCD`, `tRTP`, `tRTW`, `tWR`, `tWTR`, `tRRD`, `tMRD`, `tXSR`, `tXSNR`, `tXP`
+  `tRCD`, `tRP`, `tRAS`, `tRFC`, `tCCD`, `tRTP`, `tRTW`, `tWR`, `tWTR`, `tRRD`, `tMRD`, `tXSRD`, `tXSNR`, `tXARD`, `tCKE`
 - **Mode Register decode**: Burst length, CAS latency, burst type
 - **Inter-bank support**: Concurrent timing-safe operations
 - **Datapath**: Integrated burst counter, `burst_done`, and transfer flow
@@ -35,6 +35,7 @@ A fully synthesizable, JEDEC JESD79F-compliant functional RTL controller for DDR
 - ✅ Functional testbench: Done  
 - 🔄 Memory model connection: Pending (modular support in place)  
 - 🔜 Optional: Add assertions for formal timing coverage
+- 🔜 Optional: Comprehensive testbench
 
 ---
 
