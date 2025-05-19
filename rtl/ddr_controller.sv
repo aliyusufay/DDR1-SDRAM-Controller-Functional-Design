@@ -55,7 +55,6 @@ localparam DI = 2;		// Calculated with 32/DW
 logic init_done;
 logic last_data_in, last_data_out;	// Last data word has arrived in a burst or otherwise.// Last data word has arrived (read from ram) in a burst or otherwise.
 //Timings signals
-//logic [7:0] tDAL_counter;
 logic [7:0] tBURST;	// Burst Time
 logic [7:0] tRCD_counter [4];  
 logic [7:0] tRP_counter [4];       
@@ -78,7 +77,6 @@ logic [13:0] row_addr [4] = '{default:'bx};		// Address Signals
 logic row_active [4] = '{default:'b0};			// Default no active rows
 logic [1:0] p_ba;						// Previous selected Bank
 logic [1:0] c_ba;						// Current selected Bank
-logic [13:0] col_addr; 
 logic [2:0] burst_len;
 logic burst_type;			  
 logic [2:0] cas_latency;      
@@ -89,13 +87,7 @@ logic [DW-1:0] data_out_x16 [DI][8];	// Output data buffer
 logic dqs_en;                 
 logic dq_en;                  
 logic cke_ps, cke_cs;         // cke previous/current state
-
-// Address decoder signals
 logic [1:0] d_ba;             // Decoded bank address
-logic [2:0] d_burst_len;
-logic d_burst_type;           
-logic [2:0] d_cl;             // Decoded CAS latency
-logic [6:0] d_operating_mode; 
 logic [ROW_WIDTH-1:0] d_row_add;       
 logic [COL_WIDTH:0] d_col_add; // ap flag encoded       
 
@@ -142,8 +134,6 @@ bank_state_t bank_states [0:3], bank_next_state; // 4 banks
 logic [3:0] bank_active;        // Tracks which banks have active rows
 logic [2:0] cmd;
 logic [31:0] addr;
-//logic [31:0] data_in_f;
-//assign busy = (bank_states[0] == BANK_IDLE && bank_states[1] == BANK_IDLE && bank_states[2] == BANK_IDLE && bank_states[3] == BANK_IDLE) ? 0 : 1;
 
 // FIFO Configuration
 parameter FIFO_DEPTH = 8;
@@ -160,13 +150,12 @@ fifo_t cmd_fifo [FIFO_DEPTH-1:0];
 logic [2:0] wr_ptr, rd_ptr;
 logic full, empty, cmd_done;
 logic [2:0] count;
-int wi, ri1, ri2,j,k;
+int wi, ri1, ri2;
 logic store_dout;
 logic [31:0] data_out_reg [8];
 logic [31:0] data_in_reg [8];
 logic [7:0] transmitted_data ;
-// Extract row address bounds (adjust based on your ROW_WIDTH)
-localparam ROW_HIGH = 14 + ROW_WIDTH - 1;
+localparam ROW_HIGH = 14 + ROW_WIDTH - 1;		// Extract row address bounds (adjust based on your ROW_WIDTH)
 localparam ROW_LOW  = 14;
 
 always_ff @(posedge clk or negedge rst_n) begin
@@ -260,10 +249,6 @@ always_ff @(posedge clk or negedge rst_n) begin
     end
 end
 
-//----------------------------------------------------------------------
-// 1) Combinational: is there any match left in the FIFO?
-//----------------------------------------------------------------------
-
 logic next_match_exists;
 
 always_comb begin
@@ -272,10 +257,8 @@ always_comb begin
 			ap = 'b1;
 		end else if (!empty) begin
 			next_match_exists = 1'b0;
-			// scan all FIFO slots
-			for (int i = 0; i < FIFO_DEPTH; i++) begin
-			// skip empty/unwritten entries: assume cmd=='bx means empty
-				if (cmd_fifo[i].cmd !== 'bx && cmd_fifo[i].bank == d_ba && cmd_fifo[i].row  != d_row_add) begin
+			for (int i = 0; i < FIFO_DEPTH; i++) begin		// scan all FIFO slots
+				if (cmd_fifo[i].cmd !== 'bx && cmd_fifo[i].bank == d_ba && cmd_fifo[i].row  != d_row_add) begin		// skip empty/unwritten entries: assume cmd=='bx means empty
 					next_match_exists = 1'b1;
 				end else next_match_exists = 1'b0;
 			end	
@@ -283,21 +266,13 @@ always_comb begin
 	end
 end
 
-//----------------------------------------------------------------------
-// 2) Synchronous: update `ap` exactly when a command is fetched
-//----------------------------------------------------------------------
-
 always_ff @(posedge clk or negedge rst_n) begin
 	if (!rst_n) begin
-		ap <= 1'b1;                  // after reset, safe to precharge
+		ap <= 1'b1;
 	end else if (init_done && cmd_done && (cmd == 3'b000 || cmd == 3'b001)) begin  // on every fetch-from-FIFO event
-	// if there’s still a matching entry left, keep ap=0;
-	// otherwise, this was the last one, so we assert ap=1
 		ap <= ~next_match_exists;
 	end
-	// else, hold previous ap until next cmd_done
 end
-
 
 //FSM
 always_comb begin
@@ -322,7 +297,12 @@ if (init_done) begin
 			end
 		end
 	end
-
+	if (current_state == MODE_REGISTER_SET) begin
+		operating_mode = addr[13:7];
+		cas_latency = addr[6:4];
+		burst_type = addr[3];
+		burst_len = addr[2:0];
+	end
 end
 if (init_done) begin		//Initialization check
 	if (d_cmd == C_SELF_REFRESH) begin
@@ -784,14 +764,13 @@ always_ff @(posedge clk or negedge rst_n) begin
 		tWR_counter <= '{default:'b0};		// Write Recovery Time
 		tWTR_counter <= '{default:'b0};		// Write to Read Delay
 		tRRD_counter <= '{default:tRRD}; 	// Row to Row Delay (different banks)
-        //tDAL_counter <= '0;				// Data-In to Auto-Precharge Delay (tWR + tRP)
         tMRD_counter <= '0;					// Mode Register Set Delay
 		tRFC_counter <= '0;					// Refresh Cycle Time
 		tREFI_counter <= '0;				// Refresh Interval (Average)
 		tCKE_counter <= '0;					// Minimum holding time of CKE low/high for POWER_DOWN/SELF_REFRESH entry/exit
 		tXSNR_counter <= '0;				// Self-Refresh Exit to Non-Refresh Command
-		tXSRD_counter <= '0;					// Self-Refresh Exit Time
-		tXARD_counter <= '0;					// Exit Power Down to valid Command Delay
+		tXSRD_counter <= '0;				// Self-Refresh Exit Time
+		tXARD_counter <= '0;				// Exit Power Down to valid Command Delay
         transmitted_data <='0;
 		// Reset Initialization signals
 		init_counter <= 0;
@@ -810,14 +789,11 @@ always_ff @(posedge clk or negedge rst_n) begin
         c_ba <= 'b0; // Current selected Bank
         d_ba <= 'b0;
 		addr <= 'b0;
-		col_addr <= 'bx;
         burst_len <= 'b100;
         cas_latency <= '0;
         ap <= 'b1;
         dqs_en <= '0;
         dq_en <= '0;
-        j<=0;
-        k<=0;
     end
 	else begin
 		cke_ps <= cke_cs;
@@ -846,8 +822,6 @@ always_ff @(posedge clk or negedge rst_n) begin
             if (init_refresh_count >= 1) begin
                 init_done <= 1;
 				bank_states <= '{default:BANK_IDLE};
-				//p_ba <= 'b0;
-				//c_ba <= 'b0;
 				busy <= 'b0;
 				cmd_done <= 'b1;
             end
@@ -1100,8 +1074,6 @@ always_ff @(posedge clk or negedge rst_n) begin
             AUTO_REFRESH: begin
                 if (tRFC_counter >= tRFC) begin
 					bank_states <= '{default:BANK_IDLE};
-					//p_ba <= 'b0;
-					//c_ba <= 'b0;
 					previous_state <= current_state;
 					current_state <= next_state;
 					tRFC_counter <= '0;
@@ -1177,7 +1149,6 @@ always_ff @(posedge clk or negedge rst_n) begin
 			default: begin
 			previous_state <= current_state;
 			current_state <= next_state;
-			
 			bank_states[c_ba] <= bank_next_state;
 			end
         endcase
