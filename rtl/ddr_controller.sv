@@ -28,21 +28,27 @@ module ddr_controller(
     inout logic [15:0] dq,
     inout logic dqs
 );
+
+assign clkout = clk;
+assign clkoutn = 1-clk;
+
 // Timing Parameters
-parameter tRCD = 2;	// Row to Column Delay
-parameter tRP = 2;		// Row Precharge Time
-parameter tRAS = 5;	// Row Active Time
-parameter tRFC = 8;	// Refresh Cycle Time
-parameter tCCD = 2;	// Column to Column Delay
-parameter tRTP = 2;	// Read to Precharge Delay
-parameter tRTW = 3;	// Read to Write Delay
-parameter tWR = 2;		// Write Recovery Time
-parameter tWTR = 1;	// Write to Read Delay
-parameter tRRD = 2;	// Row to Row Delay
-parameter tMRD = 2;	// Mode Register Set Delay
-parameter tREFI = 780;	// Refresh Interval (Average)
-parameter tCKE = 1;	// Minimum holding time of CKE low/high for POWER_DOWN/SELF_REFRESH entry/exit
-parameter tXSNR = 13;	// Self-Refresh Exit to Non-Read Command
+parameter tRCD = 2;			// Row to Column Delay
+parameter tRP = 2;			// Row Precharge Time
+parameter tRAS = 5;			// Row Active Time
+//parameter tRC = 7;			// Row Cycle Time tRAS + tRP
+parameter tRFC = 8;			// Refresh Cycle Time
+parameter tCCD = 2;			// Column to Column Delay
+parameter tRTP = 2;			// Read to Precharge Delay
+parameter tRTW = 3;			// Read to Write Delay
+parameter tWR = 2;			// Write Recovery Time
+//parameter tDAL = 4;			// Data-in to Active Latency tWR + tRP
+parameter tWTR = 1;			// Write to Read Delay
+parameter tRRD = 2;			// Row to Row Delay
+parameter tMRD = 2;			// Mode Register Set Delay
+parameter tREFI = 780;		// Refresh Interval (Average)
+parameter tCKE = 1;			// Minimum holding time of CKE low/high for POWER_DOWN/SELF_REFRESH entry/exit
+parameter tXSNR = 13;		// Self-Refresh Exit to Non-Read Command
 parameter tXSRD = 200;		// Self-Refresh Exit to Read Command
 parameter tXARD = 1;		// Exit Active Power-Down Delay
 parameter tDSGN = 32'h41594148;
@@ -51,14 +57,13 @@ parameter INIT_WAIT_CYCLES = 20000; // For 200µs at 100MHz
 localparam ROW_WIDTH = 14;
 localparam COL_WIDTH = 10;
 localparam DW =16;		// DATA_WIDTH = x16
-localparam DI = 2;		// Calculated with 32/DW
 logic init_done;
 logic last_data_in, last_data_out;	// Last data word has arrived in a burst or otherwise.// Last data word has arrived (read from ram) in a burst or otherwise.
 //Timings signals
 logic [7:0] tBURST;	// Burst Time
 logic [7:0] tRCD_counter [4];  
 logic [7:0] tRP_counter [4];       
-logic [7:0] tRAS_counter [4];  
+logic [7:0] tRAS_counter [4];
 logic [7:0] tCCD_counter [4];
 logic [7:0] tRTP_counter [4];
 logic [7:0] tRTW_counter [4];
@@ -77,13 +82,14 @@ logic [13:0] row_addr [4] = '{default:'bx};		// Address Signals
 logic row_active [4] = '{default:'b0};			// Default no active rows
 logic [1:0] p_ba;						// Previous selected Bank
 logic [1:0] c_ba;						// Current selected Bank
-logic [2:0] burst_len;
+int burst_len, burst_len_dram;
+logic [2:0] bl;
 logic burst_type;			  
 logic [2:0] cas_latency;      
 logic [6:0]operating_mode;	  
 logic ap;					  
-logic [DW-1:0] data_in_x16 [DI][8];		// Input data buffer
-logic [DW-1:0] data_out_x16 [DI][8];	// Output data buffer
+logic [1:0][7:0][DW-1:0] data_in_x16;		// Input data buffer
+logic [1:0][7:0][DW-1:0] data_out_x16;		// Output data buffer
 logic dqs_en;                 
 logic dq_en;                  
 logic cke_ps, cke_cs;         // cke previous/current state
@@ -143,7 +149,7 @@ typedef struct {
     logic [31:0] data_in [8];    // Input data
     logic [1:0]  bank;       // Extracted bank (addr[13:12])
     logic [ROW_WIDTH-1:0] row; // Extracted row (addr[ROW_HIGH:ROW_LOW])
-	
+	logic [3:0] dm [8]; // dm for every data word
 } fifo_t;
 
 fifo_t cmd_fifo [FIFO_DEPTH-1:0];
@@ -152,8 +158,9 @@ logic full, empty, cmd_done;
 logic [2:0] count;
 int wi, ri1, ri2;
 logic store_dout;
-logic [31:0] data_out_reg [8];
-logic [31:0] data_in_reg [8];
+logic [7:0][31:0] data_out_reg;
+logic [7:0][31:0] data_in_reg;
+logic [7:0][3:0] dm_in_reg;
 logic [7:0] transmitted_data ;
 localparam ROW_HIGH = 14 + ROW_WIDTH - 1;		// Extract row address bounds (adjust based on your ROW_WIDTH)
 localparam ROW_LOW  = 14;
@@ -194,18 +201,19 @@ always_ff @(posedge clk or negedge rst_n) begin
             cmd_fifo[wr_ptr].row     <= iaddr[ROW_HIGH:ROW_LOW]; // Extract row
             wr_ptr <= wr_ptr + 1;
 			count <= count + 1;
-			if (icmd != 3 && icmd != 0) begin
+			if (icmd == 1 || icmd == 3) begin
 				datain_valid <= 'b1;
 			end
         end else if (!full && !busy && icmd == 4) begin
-			if (d_cmd == C_SELF_REFRESH) begin
+			if (d_cmd == C_SELF_REFRESH && current_state == SELF_REFRESH) begin
 				cmd = 3'b100;
 			end
 		end
-		if (ri1 < burst_len && datain_valid && data_in!=0) begin
+		if (ri1 < burst_len && datain_valid && data_in != 0) begin
 			cmd_fifo[wr_ptr-1].data_in[ri1] <= data_in;
+			cmd_fifo[wr_ptr-1].dm[ri1] <= dmsel;
 			ri1<=ri1+1;
-		end else if (ri1 >= burst_len) begin
+		end else if (ri1 >= burst_len && datain_valid) begin
 			ri1<=0;
 			datain_valid <= 'b0;
 		end
@@ -221,7 +229,8 @@ always_ff @(posedge clk or negedge rst_n) begin
 			cmd_done <= 'b0;
 		end
 		if (ri2 < burst_len && rd_ptr!=0) begin
-			data_in_reg[ri2] <= cmd_fifo[rd_ptr-1].data_in [ri2];
+			if (cmd_fifo[rd_ptr-1].data_in [ri2] !==32'bx || cmd_fifo[rd_ptr-1].data_in [ri2] !=0) data_in_reg[ri2] <= cmd_fifo[rd_ptr-1].data_in [ri2];
+			if (cmd_fifo[rd_ptr-1].dm [ri2] !==4'bx) dm_in_reg[ri2] <= cmd_fifo[rd_ptr-1].dm [ri2];
 			ri2<=ri2+1;
 		end else if (ri2 >= burst_len) begin
 			ri2<=0;
@@ -231,12 +240,12 @@ always_ff @(posedge clk or negedge rst_n) begin
 			end
 		end
 		
-		if (wi < burst_len && store_dout) begin
-			for (int i = 0; i < DI; i++) begin
+		if (wi < burst_len && store_dout && !dataout_valid) begin
+			for (int i = 0; i < 2; i++) begin
 				data_out_reg[wi][i*16 +: 16] = data_out_x16[i][wi];
 			end
 		wi <= wi+1;
-		end else if (wi >= burst_len) begin
+		end else if (wi >= burst_len && !dataout_valid) begin
 			wi<=0;
 			dataout_valid <=1;
 		end else if (wi < burst_len && dataout_valid) begin
@@ -276,6 +285,13 @@ end
 
 //FSM
 always_comb begin
+	// Burst length decode
+	case (burst_len_dram)
+	2: bl <= 3'b001;
+	4: bl <= 3'b010;
+	8: bl <= 3'b011;
+	endcase
+	burst_len_dram = 2*burst_len;
 // Map commands to state_t
 if (init_done) begin
     case (cmd)
@@ -291,17 +307,16 @@ if (init_done) begin
 	d_col_add [10] = ap;
 	d_col_add [9:0] = addr [COL_WIDTH-1:0];
 	for (int i = 0; i < burst_len; i++) begin
-		for (int j = 0; j < DI; j++) begin
-			if (data_in_reg[i] !== 32'bx) begin
-				data_in_x16[j][i] = data_in_reg[i][j*16 +: 16]; 
-			end
+		if (data_in_reg[i] !== 32'bx) begin
+			data_in_x16[0][i] = data_in_reg[i][15:0];
+			data_in_x16[1][i] = data_in_reg[i][31:16];
 		end
 	end
 	if (current_state == MODE_REGISTER_SET) begin
 		operating_mode = addr[13:7];
 		cas_latency = addr[6:4];
 		burst_type = addr[3];
-		burst_len = addr[2:0];
+		bl = addr[2:0];
 	end
 end
 if (init_done) begin		//Initialization check
@@ -469,7 +484,7 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_READ && last_data_out && d_col_add != cmd_fifo[rd_ptr].addr[COL_WIDTH-1:0]) begin
 					next_state = READ;	// Consecutive READ same Bank
 					bank_next_state = BANK_READ;
-				end else if (transmitted_data >= burst_len-1 && last_data_out) begin
+				end else if (last_data_out) begin
 					next_state = ACTIVE; // end of read
 					bank_next_state = BANK_ACTIVE;
 				end else begin
@@ -497,7 +512,7 @@ if (init_done) begin		//Initialization check
                 end else if (bank_states[c_ba] == BANK_READ && last_data_out && d_col_add != cmd_fifo[rd_ptr].addr[COL_WIDTH-1:0]) begin
 					next_state = WRITE; // READ to WRITE same Bank
 					bank_next_state = BANK_WRITE;
-				end else if (transmitted_data >= burst_len-1 && last_data_out) begin
+				end else if (last_data_out) begin
 					next_state = ACTIVE; // end of read
 					bank_next_state = BANK_ACTIVE;
 				end else begin
@@ -531,9 +546,9 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_ACTIVE && bank_states[p_ba] == BANK_READ_AP && c_ba != p_ba) begin
 					next_state = READ;		//other bank READ
 					bank_next_state = BANK_READ;
-				end else if (transmitted_data >= burst_len-1 && last_data_out) begin
-					next_state = PRECHARGE; // end of write
-					bank_next_state = BANK_PRECHARGE;
+				end else if (last_data_out) begin
+					next_state = IDLE; // end of write
+					bank_next_state = BANK_IDLE;
 				end else begin
 					transmitted_data = transmitted_data + 1;
 				end
@@ -550,9 +565,9 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_ACTIVE && bank_states[p_ba] == BANK_READ_AP && c_ba != p_ba) begin
 					next_state = WRITE;			//other Bank WRITE
 					bank_next_state = BANK_WRITE;
-				end else if (transmitted_data >= burst_len-1 && last_data_out) begin
-					next_state = PRECHARGE; // end of write
-					bank_next_state = BANK_PRECHARGE;
+				end else if (last_data_out) begin
+					next_state = IDLE; // end of write
+					bank_next_state = BANK_IDLE;
 				end else begin
 					transmitted_data = transmitted_data + 1;
 				end
@@ -593,7 +608,7 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_WRITE && last_data_in && d_col_add != cmd_fifo[rd_ptr].addr[COL_WIDTH-1:0]) begin
 					next_state = WRITE; // Consecutive WRITE same Bank
 					bank_next_state = BANK_WRITE;
-				end else if (transmitted_data >= burst_len-1 && last_data_in) begin
+				end else if (last_data_in) begin
 					next_state = ACTIVE; // end of write
 					bank_next_state = BANK_ACTIVE;
 				end else begin
@@ -621,7 +636,7 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_WRITE && last_data_in && d_col_add != cmd_fifo[rd_ptr].addr[COL_WIDTH-1:0]) begin
 					next_state = READ;	// WRITE to READ same Bank
 					bank_next_state = BANK_READ;
-				end else if (transmitted_data >= burst_len-1 && last_data_in) begin
+				end else if (last_data_in) begin
 					next_state = ACTIVE; // end of write
 					bank_next_state = BANK_ACTIVE;
 				end else begin
@@ -656,9 +671,9 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_ACTIVE && bank_states[p_ba] == BANK_WRITE_AP && c_ba != p_ba) begin
 					next_state = WRITE;			//other Bank WRITE
 					bank_next_state = BANK_WRITE;
-				end else if (transmitted_data >= burst_len-1 && last_data_in) begin
-					next_state = PRECHARGE; // end of write
-					bank_next_state = BANK_PRECHARGE;
+				end else if (last_data_in) begin
+					next_state = IDLE; // end of write
+					bank_next_state = BANK_IDLE;
 				end else begin
 					transmitted_data = transmitted_data + 1;
 				end
@@ -678,9 +693,9 @@ if (init_done) begin		//Initialization check
 				end else if (bank_states[c_ba] == BANK_ACTIVE && bank_states[p_ba] == BANK_WRITE_AP && c_ba != p_ba) begin
 					next_state = READ;		//other bank READ
 					bank_next_state = BANK_READ;
-				end else if (transmitted_data >= burst_len-1 && last_data_in) begin
-					next_state = PRECHARGE; // end of write
-					bank_next_state = BANK_PRECHARGE;
+				end else if (last_data_in) begin
+					next_state = IDLE; // end of write
+					bank_next_state = BANK_IDLE;
 				end else begin
 					transmitted_data = transmitted_data + 1;
 				end
@@ -789,7 +804,7 @@ always_ff @(posedge clk or negedge rst_n) begin
         c_ba <= 'b0; // Current selected Bank
         d_ba <= 'b0;
 		addr <= 'b0;
-        burst_len <= 'b100;
+		burst_len <= 4;
         cas_latency <= '0;
         ap <= 'b1;
         dqs_en <= '0;
@@ -806,7 +821,7 @@ always_ff @(posedge clk or negedge rst_n) begin
 				init_precharge_done <= 1;
             end
             if (current_state == MODE_REGISTER_SET) begin
-                burst_len <= 3'b100; // Default lenght 4
+                burst_len <= 4; // Default lenght 4 for 32bit word meaning 8 for 16bit word
 				burst_type <= 1'b0;		// Default type sequential
                 cas_latency <= 3'b010;	// Default CAS Latency 2
 				operating_mode <= 'b0;	// Default Normal Operation
@@ -848,9 +863,15 @@ always_ff @(posedge clk or negedge rst_n) begin
 				if (tCCD_counter[i] < tCCD) begin
 					tCCD_counter[i] <= tCCD_counter[i] + 1;
 				end else if (last_data_out) begin
-					if ((bank_states[i] == BANK_READ || bank_states[i] == BANK_READ_AP) && bank_next_state == BANK_PRECHARGE) begin
+					if (bank_states[i] == BANK_READ && bank_next_state == BANK_PRECHARGE) begin
 						if (tRTP_counter[i] < tRTP) begin
 							tRTP_counter[i] <= tRTP_counter[i] + 1;
+						end
+					end else if (bank_states[i] == BANK_READ_AP) begin
+						if (tRTP_counter[i] < tRTP) begin
+							tRTP_counter[i] <= tRTP_counter[i] + 1;
+						end else if (tRP_counter[i] < tRP) begin
+							tRP_counter[i] <= tRP_counter[i] + 1;
 						end
 					end else if (bank_states [i] == BANK_READ && (bank_next_state == BANK_WRITE || bank_next_state == BANK_WRITE_AP)) begin
 						if (tRTW_counter[i] < tRTW) begin
@@ -858,9 +879,15 @@ always_ff @(posedge clk or negedge rst_n) begin
 						end
 					end
 				end else if (last_data_in) begin
-					if ((bank_states[i] == BANK_WRITE || bank_states[i] == BANK_WRITE_AP) && bank_next_state == BANK_PRECHARGE) begin
+					if (bank_states[i] == BANK_WRITE && bank_next_state == BANK_PRECHARGE) begin
 						if (tWR_counter[i] < tWR) begin
 							tWR_counter[i] <= tWR_counter[i] + 1;
+						end
+					end else if (bank_states[i] == BANK_WRITE_AP) begin
+						if (tWR_counter[i] < tWR) begin
+							tWR_counter[i] <= tWR_counter[i] + 1;
+						end else if (tRP_counter[i] < tRP) begin
+							tRP_counter[i] <= tRP_counter[i] + 1;
 						end
 					end else if (bank_states [i] == BANK_WRITE && (bank_next_state == BANK_READ || bank_next_state == BANK_READ_AP)) begin
 						if (tWTR_counter[i] < tWTR) begin
@@ -965,7 +992,7 @@ always_ff @(posedge clk or negedge rst_n) begin
 			end
 			
 			READ_WITH_AUTOPRECHARGE: begin
-				if (tRTP_counter [c_ba] >= tRTP) begin
+				if (tRTP_counter [c_ba] >= tRTP && tRP_counter [c_ba] >= tRP && tRAS_counter [c_ba] >= tRAS) begin
 					previous_state <= current_state;
 					current_state <= next_state;
 					last_data_in <= 'b0;
@@ -973,6 +1000,8 @@ always_ff @(posedge clk or negedge rst_n) begin
 					transmitted_data <= 0;
 					bank_states [c_ba] <= bank_next_state;
 					tRTP_counter [c_ba]<= '0;
+					tRP_counter [c_ba] <= '0;
+					tRAS_counter [c_ba] <= '0;
 				end else begin
 					current_state <= current_state;//wait logic
 				end
@@ -1026,7 +1055,7 @@ always_ff @(posedge clk or negedge rst_n) begin
 			end
 
 			WRITE_WITH_AUTOPRECHARGE: begin
-				if (tWR_counter [c_ba] >= tWR) begin
+				if (tWR_counter [c_ba] >= tWR && tRP_counter [c_ba] >= tRP) begin
 					previous_state <= current_state;
 					current_state <= next_state;
 					last_data_in <= 'b0;
@@ -1034,6 +1063,7 @@ always_ff @(posedge clk or negedge rst_n) begin
 					transmitted_data <= 0;
 					bank_states [c_ba] <= bank_next_state;
 					tWR_counter [c_ba] <= '0;
+					tRP_counter [c_ba] <= '0;
 				end else begin
 					current_state <= current_state;//Wait logic
 				end
@@ -1232,7 +1262,7 @@ always_ff @(posedge clk or negedge rst_n) begin
 					addrout [13:7] <= operating_mode;
 					addrout [6:4] <= cas_latency;
 					addrout [3] <= burst_type;
-					addrout [2:0] <= burst_len;
+					addrout [2:0] <= bl;
 				end
 				BURST_STOP : begin
 					cs_n <= 'b0;
@@ -1276,11 +1306,11 @@ always_ff @(posedge clk or negedge rst_n) begin
 end
 
 
-assign tBURST = burst_len/2;
-logic [(DI/2)-1:0] counter_r =0;
-logic [2:0] counter_rc =0;
-logic [(DI/2)-1:0] counter_w =0;
-logic [2:0] counter_wc =0;
+assign tBURST = burst_len_dram/2;
+logic counter_r;
+logic [2:0] counter_rc;
+logic counter_w;
+logic [2:0] counter_wc;
 logic [15:0] dq_reg;
 assign dq = (!dq_en) ? 'bz : dq_reg;
 assign dqs = (!dqs_en) ? 'bz : clk2x;
@@ -1288,7 +1318,11 @@ always_ff @(posedge clk2x or negedge rst_n) begin
 	if (!rst_n) begin
 		counter_r <= 0;
 		counter_w <= 0;
+		counter_rc <= 0;
+		counter_wc <= 0;
 		store_dout <= 'b0;
+		datain_valid <= 'b0;
+		dataout_valid <= 'b0;
 	end else begin
 		case (current_state)
 			WRITE, WRITE_WITH_AUTOPRECHARGE: begin
@@ -1302,9 +1336,21 @@ always_ff @(posedge clk2x or negedge rst_n) begin
 				if (dq_en && dqs_en) begin
 					if (counter_wc < burst_len) begin
 						dq_reg <= data_in_x16 [counter_w][counter_wc];
+						if (!counter_w && dm_in_reg [counter_wc][0] == 0) ldm <= 1;
+						else ldm <= 0;
+						if (!counter_w && dm_in_reg [counter_wc][1] == 0) dm <= 1;
+						else dm <= 0;
+						if (counter_w && dm_in_reg [counter_wc][2] == 0) ldm <= 1;
+						else ldm <= 0;
+						if (counter_w && dm_in_reg [counter_wc][3] == 0) dm <= 1;
+						else dm <= 0;
 						counter_w <= counter_w + 1;
 						counter_wc <= counter_wc + counter_w;
-					end else last_data_in <= 1;
+					end else begin
+						last_data_in <= 1;
+						ldm <= 0;
+						dm <= 0;
+					end
 				end
 			end
 			READ, READ_WITH_AUTOPRECHARGE: begin
@@ -1315,7 +1361,9 @@ always_ff @(posedge clk2x or negedge rst_n) begin
 					store_dout <= 'b1;
 					dqs_en <= 1'b0;
 					dq_en <= 1'b0;
-				end else last_data_out <= 1;
+				end else begin
+					last_data_out <= 1;
+				end
 			end
 			BURST_STOP: begin
 				data_out_x16 <= '{default:'bx};
