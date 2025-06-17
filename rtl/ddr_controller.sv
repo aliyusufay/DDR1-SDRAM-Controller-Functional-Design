@@ -819,7 +819,6 @@ always_ff @(posedge clk or negedge rst_n) begin
         c_ba <= 'b0; // Current selected Bank
         d_ba <= 'b0;
 		addr <= 'b0;
-		burst_len <= 4;
         cas_latency <= '0;
         ap <= 'b1;
         dqs_en <= '0;
