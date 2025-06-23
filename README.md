@@ -1,6 +1,6 @@
 # 🧠 DDR1 SDRAM Functional Controller – SystemVerilog
 
-A fully synthesizable, JEDEC JESD79F-compliant functional RTL controller for DDR1 SDRAM. This design integrates the control path, datapath, and auto-precharge execution logic. It is capable of issuing, sequencing, and validating DDR1 commands with full timing enforcement and a cycle-accurate burst datapath.
+A JEDEC JESD79F-compliant functional RTL controller for DDR1 SDRAM. This design integrates the control path, datapath, and auto-precharge execution logic. It is capable of issuing, sequencing, and validating DDR1 commands with full timing enforcement and a cycle-accurate burst datapath.
 
 ---
 
